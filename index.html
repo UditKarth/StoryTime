@@ -155,11 +155,14 @@
             </div>
 
             <div class="controls__row controls__row--tools">
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center gap-2">
                 <button id="fontDown" class="btn btn--mini" type="button" aria-label="Smaller text">A<span class="text-xs">−</span></button>
                 <button id="fontUp" class="btn btn--mini" type="button" aria-label="Bigger text">A<span class="text-sm">+</span></button>
-                <button id="redToggle" class="btn btn--mini" type="button" aria-pressed="false" title="Colour the Red Words">
+                <button id="redToggle" class="btn btn--mini btn--toggle-red" type="button" aria-pressed="true" title="Colour the Red Words (sight words)">
                   <span class="dot dot--red" aria-hidden="true"></span> Red Words
+                </button>
+                <button id="greenToggle" class="btn btn--mini btn--toggle-green" type="button" aria-pressed="true" title="Colour the Green Words (today's phonics pattern)">
+                  <span class="dot dot--green" aria-hidden="true"></span> Green Words
                 </button>
               </div>
               <label class="voice">
@@ -199,7 +202,7 @@
       </button>
       <p id="popWord" class="font-display text-3xl font-bold leading-none"></p>
     </div>
-    <p id="popTag" class="word-pop__tag"></p>
+    <div id="popTags" class="word-pop__tags"></div>
     <p id="popDef" class="word-pop__def"></p>
   </div>
 

@@ -14,6 +14,7 @@
   --sun: #FFD84D;
   --coral: #FF7A7A;
   --red-word: #D62846;
+  --green-word: #13823A;
   --lilac: #EDE6FF;
   --white: #FFFFFF;
 
@@ -102,10 +103,14 @@ body {
 .btn--round { width: 52px; min-height: 52px; height: 52px; padding: 0; }
 .btn--small { width: 44px; height: 44px; min-height: 44px; font-size: 1rem; }
 .btn--mini { min-height: 42px; padding: .35rem .9rem; font-size: 1.05rem; }
-.btn--mini[aria-pressed="true"] { background: #FFD6DD; }
+.btn--toggle-red[aria-pressed="true"] { background: #FFD6DD; }
+.btn--toggle-green[aria-pressed="true"] { background: #C9F2D6; }
+.btn--mini[aria-pressed="false"] { color: var(--muted); }
+.btn--mini[aria-pressed="false"] .dot { background: var(--white); }
 
 .dot { display: inline-block; width: .8em; height: .8em; border-radius: 50%; border: 2px solid var(--ink); }
 .dot--red { background: var(--red-word); }
+.dot--green { background: var(--green-word); }
 
 /* ---------- Library ---------- */
 .hero {
@@ -278,6 +283,7 @@ body {
 }
 .story-text p { max-width: 36em; }
 .story-text p + p { margin-top: .55em; }
+.token { white-space: nowrap; }
 
 .word {
   display: inline-block; position: relative;
@@ -292,6 +298,7 @@ body {
   text-decoration: underline dotted var(--grape);
   text-decoration-thickness: 3px; text-underline-offset: .25em;
 }
+.story-text.show-green .word.is-green { color: var(--green-word); }
 .story-text.show-red .word.is-red { color: var(--red-word); }
 
 .word.is-active {
@@ -320,13 +327,15 @@ body {
   position: absolute; top: .55rem; right: .55rem; width: 36px; height: 36px; border-radius: 50%;
   font-weight: 800; background: var(--lilac); color: var(--ink);
 }
+.word-pop__tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .75rem; }
 .word-pop__tag {
-  display: inline-block; margin-top: .75rem; padding: .15rem .7rem; border-radius: 999px;
+  display: inline-block; padding: .15rem .7rem; border-radius: 999px;
   font: 600 .9rem 'Fredoka', sans-serif; background: var(--lilac); border: 2px solid var(--ink);
 }
 .word-pop__tag[data-type="vocab"] { background: #FFF3C9; }
 .word-pop__tag[data-type="red"] { background: #FFD6DD; }
 .word-pop__tag[data-type="name"] { background: #DFF5FF; }
+.word-pop__tag[data-type="green"] { background: #C9F2D6; }
 .word-pop__def { margin-top: .6rem; font-weight: 700; font-size: 1.15rem; line-height: 1.45; }
 
 /* ---------- Word Bank drawer ---------- */
@@ -362,6 +371,7 @@ body {
 .say-chip:hover { transform: translateY(-2px); }
 .say-chip:active { transform: translateY(2px); box-shadow: none; }
 .say-chip--red { color: var(--red-word); }
+.say-chip--green { color: var(--green-word); }
 .say-chip .icon { width: 1.05em; height: 1.05em; }
 
 .scrim { position: fixed; inset: 0; z-index: 45; background: rgba(46,42,79,.35); }

@@ -76,6 +76,7 @@
     const chars = new Map();
     Object.entries(story.characters || {}).forEach(([name, def]) => chars.set(normalize(name), { word: name, def }));
     const red = new Set((story.redWords || []).map(normalize));
+    const green = new Set((story.greenWords || []).map(normalize));
     const focus = new Set((story.vocabWords || []).map(normalize));
     const { words, paragraphs } = tokenize(story.text || '');
 
@@ -83,7 +84,7 @@
     words.forEach((w) => { w.dictKey = resolveDictKey(dict, w.key); });
 
     const p = {
-      ...story, dict, chars, red, focus, words, paragraphs,
+      ...story, dict, chars, red, green, focus, words, paragraphs,
       color: story.color || CARD_COLORS[index % CARD_COLORS.length],
       targetWords: [...dict.values()].map((d) => d.word)
     };
@@ -110,10 +111,10 @@
     controls: $('#controls'), playBtn: $('#playBtn'), playIcon: $('#playIcon'), playLabel: $('#playLabel'),
     stopBtn: $('#stopBtn'), restartBtn: $('#restartBtn'), speedGroup: $('#speedGroup'),
     progress: $('#progress'), progressFill: $('#progressFill'), progressPct: $('#progressPct'), progressRunner: $('#progressRunner'),
-    fontDown: $('#fontDown'), fontUp: $('#fontUp'), redToggle: $('#redToggle'), voiceSelect: $('#voiceSelect'),
+    fontDown: $('#fontDown'), fontUp: $('#fontUp'), redToggle: $('#redToggle'), greenToggle: $('#greenToggle'), voiceSelect: $('#voiceSelect'),
     storyText: $('#storyText'),
     drawer: $('#vocabDrawer'), drawerBody: $('#drawerBody'), drawerToggle: $('#drawerToggle'), drawerClose: $('#drawerClose'), scrim: $('#drawerScrim'),
-    pop: $('#wordPop'), popWord: $('#popWord'), popTag: $('#popTag'), popDef: $('#popDef'), popSay: $('#popSay'), popClose: $('#popClose'),
+    pop: $('#wordPop'), popWord: $('#popWord'), popTags: $('#popTags'), popDef: $('#popDef'), popSay: $('#popSay'), popClose: $('#popClose'),
     toast: $('#toast'), srLive: $('#srLive')
   };
 
@@ -126,7 +127,8 @@
     activeEl: null,
     rate: SPEEDS.includes(store.get('rate', 1)) ? store.get('rate', 1) : 1,
     fontSize: clamp(store.get('fontSize', FONT_DEFAULT), FONT_MIN, FONT_MAX),
-    showRed: store.get('showRed', false),
+    showRed: store.get('redWordsOn', true),
+    showGreen: store.get('greenWordsOn', true),
     query: '',
     level: 'All',
     focusIndex: 0
@@ -175,8 +177,10 @@
     allStories().forEach((s) => {
       if (state.level !== 'All' && s.level !== state.level) return;
       const targets = [...new Set([...s.targetWords, ...(s.vocabWords || [])])];
-      const matched = q ? targets.filter((w) => w.toLowerCase().startsWith(q)) : [];
-      if (q && !s.title.toLowerCase().includes(q) && !matched.length) return;
+      const searchable = [...new Set([...targets, ...(s.greenWords || [])])];
+      const matched = q ? searchable.filter((w) => w.toLowerCase().startsWith(q)) : [];
+      const inHeading = [s.title, s.book, s.concept].some((t) => t && t.toLowerCase().includes(q));
+      if (q && !inHeading && !matched.length) return;
       results.push({ s, targets, matched });
     });
 
@@ -204,6 +208,12 @@
     el.emptyState.hidden = results.length > 0;
     el.resultCount.textContent = `${results.length} ${results.length === 1 ? 'story' : 'stories'} found`;
     el.searchClear.hidden = !state.query;
+  }
+
+  /** "Concept 33 (ss, ll, ff, zz)" → "ss, ll, ff, zz" */
+  function conceptLabel(story) {
+    if (!story.concept) return '';
+    return story.concept.replace(/^Concept\s+\d+\s*/i, '').replace(/^\((.*)\)$/, '$1').trim();
   }
 
   function levelEmoji(level) {
@@ -597,6 +607,7 @@
     if (story.rule) lesson.push(`<p><strong>📏 Rule:</strong> ${escapeHtml(story.rule)}</p>`);
     if (story.vocabWords?.length) lesson.push(`<p><strong>⭐ Focus words:</strong> ${story.vocabWords.map(escapeHtml).join(', ')}</p>`);
     if (story.redWords?.length) lesson.push(`<p><strong>🔴 Red Words:</strong> ${story.redWords.map(escapeHtml).join(', ')}</p>`);
+    if (story.greenWords?.length) lesson.push(`<p><strong>🟢 Green Words:</strong> ${story.greenWords.map(escapeHtml).join(', ')}</p>`);
     el.lessonBody.innerHTML = lesson.join('');
     el.lessonCard.hidden = !lesson.length;
     el.lessonCard.open = window.innerWidth >= 640; // keep the story above the fold on phones
@@ -608,17 +619,22 @@
       const p = document.createElement('p');
       idxs.forEach((i, n) => {
         const w = story.words[i];
-        if (w.lead) p.append(w.lead);
+        // Group quotes/punctuation with their word so a line never starts with a lone comma.
+        const token = document.createElement('span');
+        token.className = 'token';
+        if (w.lead) token.append(w.lead);
         const span = document.createElement('span');
         span.className = 'word';
         if (w.dictKey) span.classList.add('is-vocab');
         if (story.red.has(w.key)) span.classList.add('is-red');
+        if (story.green.has(w.key)) span.classList.add('is-green');
         span.dataset.i = i;
         span.tabIndex = i === 0 ? 0 : -1;
         span.textContent = w.core;
-        p.append(span);
+        token.append(span);
         state.wordEls[i] = span;
-        if (w.trail) p.append(w.trail);
+        if (w.trail) token.append(w.trail);
+        p.append(token);
         if (n < idxs.length - 1) p.append(' ');
       });
       frag.append(p);
@@ -628,7 +644,7 @@
 
     renderDrawer(story);
     applyFontSize();
-    applyRedWords();
+    applyWordColors();
     updateProgress(0);
     updateControls();
   }
@@ -650,6 +666,11 @@
         <p class="vocab-item__def">${escapeHtml(def)}</p>
       </li>`).join('')}</ul>`;
 
+    if (story.greenWords?.length) {
+      html += `<h3><span class="dot dot--green" aria-hidden="true"></span> Green Words</h3>
+        <p class="hint">Words that follow today's rule${conceptLabel(story) ? `: ${escapeHtml(conceptLabel(story))}` : ''}.</p>
+        <div class="chip-row mt-2">${story.greenWords.map((w) => say(w, 'say-chip--green')).join('')}</div>`;
+    }
     if (story.redWords?.length) {
       html += `<h3><span class="dot dot--red" aria-hidden="true"></span> Red Words</h3>
         <p class="hint">Sight words to know by heart.</p>
@@ -680,9 +701,13 @@
     el.fontUp.disabled = state.fontSize >= FONT_MAX;
   }
 
-  function applyRedWords() {
+  function applyWordColors() {
     el.storyText.classList.toggle('show-red', state.showRed);
+    el.storyText.classList.toggle('show-green', state.showGreen);
     el.redToggle.setAttribute('aria-pressed', String(state.showRed));
+    el.greenToggle.setAttribute('aria-pressed', String(state.showGreen));
+    el.redToggle.hidden = !state.story?.redWords?.length;
+    el.greenToggle.hidden = !state.story?.greenWords?.length;
   }
 
   // ---------- Controls events ----------
@@ -706,7 +731,8 @@
 
   el.fontDown.addEventListener('click', () => { state.fontSize = clamp(state.fontSize - FONT_STEP, FONT_MIN, FONT_MAX); store.set('fontSize', state.fontSize); applyFontSize(); closePopover(); });
   el.fontUp.addEventListener('click', () => { state.fontSize = clamp(state.fontSize + FONT_STEP, FONT_MIN, FONT_MAX); store.set('fontSize', state.fontSize); applyFontSize(); closePopover(); });
-  el.redToggle.addEventListener('click', () => { state.showRed = !state.showRed; store.set('showRed', state.showRed); applyRedWords(); });
+  el.redToggle.addEventListener('click', () => { state.showRed = !state.showRed; store.set('redWordsOn', state.showRed); applyWordColors(); });
+  el.greenToggle.addEventListener('click', () => { state.showGreen = !state.showGreen; store.set('greenWordsOn', state.showGreen); applyWordColors(); });
 
   // ---------- Word interaction: double-click / double-tap / keyboard ----------
   let lastTap = { el: null, time: 0 };
@@ -781,10 +807,18 @@
 
   function lookupDefinition(w) {
     const s = state.story;
-    if (w.dictKey) return { type: 'vocab', tag: '⭐ Story word', text: s.dict.get(w.dictKey).def };
-    if (s.chars.has(w.key)) return { type: 'name', tag: '👋 Name', text: s.chars.get(w.key).def };
-    if (s.red.has(w.key)) return { type: 'red', tag: '🔴 Red Word', text: 'A sight word. Learn it by heart so you can read it fast!' };
-    return { type: 'none', tag: '🎧 Listen', text: 'Listen and say it with me! Ask your teacher what this word means.' };
+    const tags = [];
+    let text = null;
+    if (w.dictKey) { tags.push({ type: 'vocab', label: '⭐ Story word' }); text = s.dict.get(w.dictKey).def; }
+    if (s.chars.has(w.key)) { tags.push({ type: 'name', label: '👋 Name' }); text ??= s.chars.get(w.key).def; }
+    if (s.red.has(w.key)) { tags.push({ type: 'red', label: '🔴 Red Word' }); text ??= 'A sight word. Learn it by heart so you can read it fast!'; }
+    if (s.green.has(w.key)) {
+      tags.push({ type: 'green', label: '🟢 Green Word' });
+      const pattern = conceptLabel(s);
+      text ??= pattern ? `This word follows today's rule: ${pattern}. Sound it out!` : "This word follows today's rule. Sound it out!";
+    }
+    if (!tags.length) tags.push({ type: 'none', label: '🎧 Listen' });
+    return { tags, text: text ?? 'Listen and say it with me! Ask your teacher what this word means.' };
   }
 
   function showPopover(wordEl, w) {
@@ -792,12 +826,12 @@
     pop.anchor = wordEl;
     pop.word = w;
     el.popWord.textContent = w.core;
-    el.popTag.textContent = def.tag;
-    el.popTag.dataset.type = def.type;
+    el.popTags.innerHTML = def.tags.map((t) =>
+      `<span class="word-pop__tag" data-type="${t.type}">${escapeHtml(t.label)}</span>`).join('');
     el.popDef.textContent = def.text;
     el.pop.hidden = false;
     positionPopover();
-    announce(`${w.core}. ${def.text}`);
+    announce(`${w.core}. ${def.tags.map((t) => t.label.replace(/^\S+\s/, '')).join(', ')}. ${def.text}`);
   }
 
   function positionPopover() {

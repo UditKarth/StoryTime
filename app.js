@@ -9,7 +9,6 @@
   const STORIES = Array.isArray(window.STORIES) ? window.STORIES : [];
   const SPEEDS = [0.5, 0.75, 1, 1.25];
   const FONT_MIN = 22, FONT_MAX = 44, FONT_STEP = 2, FONT_DEFAULT = 30;
-  const ONLINE_DICTIONARY = true; // fall back to dictionaryapi.dev for words not in the story dictionary
   const CARD_COLORS = ['#DFF5FF', '#FFE3EC', '#E3FBEF', '#FFF3C9', '#EDE6FF', '#FFE6D6'];
   const DOUBLE_TAP_MS = 380;
 
@@ -230,40 +229,75 @@
   const canSpeak = !!synth && 'SpeechSynthesisUtterance' in window;
   const tts = {
     token: 0,             // bumped on every stop/pause so stale callbacks are ignored
-    voices: [],
-    voice: null,
+    voiceURI: null,       // the chosen voice; stored as its unique URI, never as a Voice object
     current: null,        // keep a reference: Chrome drops events of garbage-collected utterances
     estTimer: null,
     graceTimer: null,
     boundaryOk: new Set(),  // voices that fire word boundary events
     boundaryNo: new Set()   // voices that don't (e.g. Chrome's online "Google" voices)
   };
-  const voiceKey = () => (tts.voice ? tts.voice.voiceURI || tts.voice.name : 'default');
+
+  // macOS ships joke and retro voices (Bubbles, Zarvox, Eddy, Grandma...). Hide them from kids.
+  const NOVELTY_VOICE = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Fred|Junior|Ralph|Kathy|Princess|Deranged|Hysterical|Pipe Organ|Grandma|Grandpa|Eddy|Flo|Reed|Rocko|Sandy|Shelley)\b/i;
+  // Neural and premium voices sound far more human than the standard ones.
+  const NATURAL_VOICE = /natural|neural|premium|enhanced|siri/i;
+
+  const isNatural = (v) => NATURAL_VOICE.test(v.name);
+  const voiceScore = (v) =>
+    (isNatural(v) ? 20 : 0) + (/^Google\b/.test(v.name) ? 6 : 0) +
+    (/en[-_]US/i.test(v.lang) ? 4 : /en[-_]GB/i.test(v.lang) ? 3 : 0) +
+    (v.localService ? 1 : 0) + (v.default ? 1 : 0);
+
+  /** Always resolve the voice from the browser's current list: Voice objects go stale after `voiceschanged`. */
+  function currentVoice() {
+    if (!canSpeak || !tts.voiceURI) return null;
+    return synth.getVoices().find((v) => v.voiceURI === tts.voiceURI) || null;
+  }
+  const voiceKey = () => tts.voiceURI || 'default';
+
+  function voiceLabel(v) {
+    const name = v.name
+      .replace(/^(Microsoft|Google)\s+/, '')
+      .replace(/\s+Online\s*\(Natural\)/i, '')
+      .replace(/\s*-\s*English.*$/i, '')
+      .replace(/\s*\(English[^)]*\)\s*$/i, '');
+    return `${name} (${v.lang})`;
+  }
 
   function loadVoices() {
     if (!canSpeak) return;
     const all = synth.getVoices();
     if (!all.length) return;
-    const english = all.filter((v) => /^en([-_]|$)/i.test(v.lang));
-    const list = (english.length ? english : all).slice();
-    const score = (v) => (/en[-_]US/i.test(v.lang) ? 4 : /en[-_]GB/i.test(v.lang) ? 3 : 0) +
-      (v.localService ? 3 : 0) + (v.default ? 1 : 0) +
-      (/samantha|aria|jenny|ava|allison|zira|karen|daniel/i.test(v.name) ? 1 : 0);
-    list.sort((a, b) => score(b) - score(a) || a.name.localeCompare(b.name));
-    tts.voices = list;
-    const saved = store.get('voice', null);
-    tts.voice = list.find((v) => v.name === saved) || list[0] || null;
-    el.voiceSelect.innerHTML = list.map((v) =>
-      `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name.replace(/^(Microsoft|Google)\s+/, ''))} (${escapeHtml(v.lang)})</option>`
-    ).join('');
-    if (tts.voice) el.voiceSelect.value = tts.voice.name;
+    const english = all.filter((v) => /^en([-_]|$)/i.test(v.lang) && !NOVELTY_VOICE.test(v.name));
+    const pool = english.length ? english : all;
+    const seen = new Set();
+    const list = pool.filter((v) => !seen.has(v.voiceURI) && seen.add(v.voiceURI))
+      .sort((a, b) => voiceScore(b) - voiceScore(a) || a.name.localeCompare(b.name));
+
+    // Keep the current choice; otherwise restore the saved one (older saves stored the name), else the best voice.
+    const savedURI = store.get('voiceURI', null);
+    const savedName = store.get('voice', null);
+    const pick = list.find((v) => v.voiceURI === tts.voiceURI) ||
+      list.find((v) => v.voiceURI === savedURI) ||
+      list.find((v) => v.name === savedName) || list[0];
+    tts.voiceURI = pick ? pick.voiceURI : null;
+
+    const option = (v) => `<option value="${escapeHtml(v.voiceURI)}">${escapeHtml(voiceLabel(v))}</option>`;
+    const natural = list.filter(isNatural);
+    const others = list.filter((v) => !isNatural(v));
+    el.voiceSelect.innerHTML = natural.length
+      ? `<optgroup label="✨ Most natural">${natural.map(option).join('')}</optgroup>` +
+        (others.length ? `<optgroup label="Other voices">${others.map(option).join('')}</optgroup>` : '')
+      : list.map(option).join('');
+    if (tts.voiceURI) el.voiceSelect.value = tts.voiceURI;
   }
 
   function makeUtterance(text, rate) {
     const u = new SpeechSynthesisUtterance(text);
+    const voice = currentVoice();
     u.rate = rate;
-    u.pitch = 1.05;
-    if (tts.voice) { u.voice = tts.voice; u.lang = tts.voice.lang; } else { u.lang = 'en-US'; }
+    u.pitch = 1;
+    if (voice) { u.voice = voice; u.lang = voice.lang; } else { u.lang = 'en-US'; }
     return u;
   }
 
@@ -664,9 +698,10 @@
   });
 
   el.voiceSelect.addEventListener('change', () => {
-    tts.voice = tts.voices.find((v) => v.name === el.voiceSelect.value) || tts.voice;
-    store.set('voice', tts.voice?.name);
+    tts.voiceURI = el.voiceSelect.value;
+    store.set('voiceURI', tts.voiceURI);
     if (state.status === 'playing') playFrom(state.index);
+    else sayWord("Hi! Let's read together."); // let the child hear the new voice right away
   });
 
   el.fontDown.addEventListener('click', () => { state.fontSize = clamp(state.fontSize - FONT_STEP, FONT_MIN, FONT_MAX); store.set('fontSize', state.fontSize); applyFontSize(); closePopover(); });
@@ -742,61 +777,25 @@
   }
 
   // ---------- Popover ----------
-  const pop = { anchor: null, word: null, req: 0 };
-  const defCache = new Map();
+  const pop = { anchor: null, word: null };
 
-  async function lookupDefinition(w) {
+  function lookupDefinition(w) {
     const s = state.story;
     if (w.dictKey) return { type: 'vocab', tag: '⭐ Story word', text: s.dict.get(w.dictKey).def };
     if (s.chars.has(w.key)) return { type: 'name', tag: '👋 Name', text: s.chars.get(w.key).def };
     if (s.red.has(w.key)) return { type: 'red', tag: '🔴 Red Word', text: 'A sight word. Learn it by heart so you can read it fast!' };
-
-    const online = ONLINE_DICTIONARY ? await fetchDefinition(w.key) : null;
-    if (online) return { type: 'online', tag: `📖 ${online.pos || 'Dictionary'}`, text: online.text };
     return { type: 'none', tag: '🎧 Listen', text: 'Listen and say it with me! Ask your teacher what this word means.' };
   }
 
-  async function fetchDefinition(key) {
-    if (!key || /\d/.test(key)) return null;
-    if (defCache.has(key)) return defCache.get(key);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 4000);
-    try {
-      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(key)}`, { signal: ctrl.signal });
-      if (!res.ok) { if (res.status === 404) defCache.set(key, null); return null; }
-      const data = await res.json();
-      const meaning = data?.[0]?.meanings?.[0];
-      // Prefer the shortest of the first few definitions: they tend to be the simplest for kids.
-      const defs = (meaning?.definitions || []).slice(0, 3).map((d) => d.definition).filter(Boolean);
-      const text = defs.sort((a, b) => a.length - b.length)[0];
-      const result = text ? { text, pos: meaning.partOfSpeech } : null;
-      defCache.set(key, result);
-      return result;
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async function showPopover(wordEl, w) {
-    const req = ++pop.req;
+  function showPopover(wordEl, w) {
+    const def = lookupDefinition(w);
     pop.anchor = wordEl;
     pop.word = w;
     el.popWord.textContent = w.core;
-    el.popTag.textContent = '…';
-    el.popTag.dataset.type = '';
-    el.popDef.textContent = 'Looking it up…';
-    el.popDef.classList.add('is-loading');
-    el.pop.hidden = false;
-    positionPopover();
-
-    const def = await lookupDefinition(w);
-    if (req !== pop.req || el.pop.hidden) return;
     el.popTag.textContent = def.tag;
     el.popTag.dataset.type = def.type;
     el.popDef.textContent = def.text;
-    el.popDef.classList.remove('is-loading');
+    el.pop.hidden = false;
     positionPopover();
     announce(`${w.core}. ${def.text}`);
   }
@@ -819,7 +818,6 @@
   function closePopover(returnFocus = false) {
     if (el.pop.hidden) return;
     el.pop.hidden = true;
-    pop.req++;
     if (returnFocus && pop.anchor) pop.anchor.focus();
     pop.anchor = null;
   }

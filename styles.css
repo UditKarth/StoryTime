@@ -328,7 +328,6 @@ body {
 .word-pop__tag[data-type="red"] { background: #FFD6DD; }
 .word-pop__tag[data-type="name"] { background: #DFF5FF; }
 .word-pop__def { margin-top: .6rem; font-weight: 700; font-size: 1.15rem; line-height: 1.45; }
-.word-pop__def.is-loading { color: var(--muted); }
 
 /* ---------- Word Bank drawer ---------- */
 .drawer {

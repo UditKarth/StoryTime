@@ -61,10 +61,22 @@ Dictionary words are underlined in the story and matched with simple endings, so
 ## How the features work
 
 - **Read-aloud with highlighting.** The app uses `speechSynthesis` and speaks one sentence at a time. This avoids Chrome's cut-off on long utterances and lets Pause, a speed change or a voice change pick up at the current word. Word `boundary` events drive the highlight. Some voices never fire them (for example Chrome's online "Google" voices); for those, the app estimates word timing and resyncs at every sentence.
-- **Double-click / double-tap a word.** Story playback pauses (Resume continues from that word), the word is spoken at a slower rate, and a popover shows its meaning. The lookup order is: story dictionary → character names → Red Words → [dictionaryapi.dev](https://dictionaryapi.dev) → a friendly "ask your teacher" message. To stay offline, set `ONLINE_DICTIONARY = false` in `app.js`. Tablets get their own double-tap detection because `dblclick` is unreliable on iPadOS.
+- **Double-click / double-tap a word.** Story playback pauses (Resume continues from that word), the word is spoken at a slower rate, and a popover shows its meaning. Meanings come from the story's `dictionary`, then `characters`, then `redWords`. Any other word shows "Listen and say it with me! Ask your teacher what this word means." To give a word a meaning, add it to that story's `dictionary`. Tablets get their own double-tap detection because `dblclick` is unreliable on iPadOS.
 - **Keyboard.** The story is a single tab stop. Arrow keys move between words, and Enter or Space says the word. Space elsewhere plays or pauses, and Esc closes popovers and the drawer.
 - **Saved in the browser.** Finished stories (stars), speed, voice, text size and the Red Words toggle are kept in `localStorage`.
 - **Reduced motion.** Confetti, the word scale-up and other animations are turned off when the device asks for reduced motion.
+
+## Voices
+
+The voice list shows English voices only and hides the joke voices macOS ships with (Bubbles, Zarvox, Grandma and so on). Natural-sounding voices are listed first, under **✨ Most natural**. Changing the voice plays a short "Hi! Let's read together." so you can hear it straight away.
+
+How human the voice sounds depends on the device, so each classroom device may need a better voice installed:
+
+- **Mac, iPad and iPhone:** open *System Settings → Accessibility → Spoken Content → System Voice → Manage Voices* (on iPad: *Settings → Accessibility → Spoken Content → Voices → English*). Download a **Premium** or **Enhanced** voice, such as *Ava (Premium)*, *Zoe (Premium)* or *Evan (Enhanced)*. Reload the page and it appears at the top of the list. Safari picks these up most reliably.
+- **Windows or any computer with Microsoft Edge:** Edge includes free "Natural" neural voices (*Ava, Andrew, Emma, Brian…*) that sound very close to a real person. They need an internet connection.
+- **Chrome:** the "Google US English" / "Google UK English" voices sound better than most built-in voices. They don't report word timing, so the app estimates it.
+
+The app remembers the chosen voice on each device.
 
 ## Browser notes
 

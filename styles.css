@@ -105,6 +105,7 @@ body {
 .btn--mini { min-height: 42px; padding: .35rem .9rem; font-size: 1.05rem; }
 .btn--toggle-red[aria-pressed="true"] { background: #FFD6DD; }
 .btn--toggle-green[aria-pressed="true"] { background: #C9F2D6; }
+.btn--toggle-mode[aria-pressed="true"] { background: #DCD2FF; }
 .btn--mini[aria-pressed="false"] { color: var(--muted); }
 .btn--mini[aria-pressed="false"] .dot { background: var(--white); }
 
@@ -247,6 +248,10 @@ body {
 }
 .speed__opt input:checked + span { background: var(--grape); color: var(--white); box-shadow: 0 2px 0 var(--ink); }
 .speed__opt input:focus-visible + span { outline: 4px solid var(--grape); outline-offset: 2px; }
+/* Word by word sets its own pace: speeds look switched off but stay clickable */
+.speed.is-inactive .speed__label,
+.speed.is-inactive .speed__group { opacity: .4; filter: grayscale(1); transition: opacity .15s; }
+.speed.is-inactive .speed__group:hover { opacity: .7; }
 
 .progress {
   position: relative; flex: 1; min-width: 160px; height: 26px;

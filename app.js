@@ -114,7 +114,7 @@
     controls: $('#controls'), playBtn: $('#playBtn'), playIcon: $('#playIcon'), playLabel: $('#playLabel'),
     stopBtn: $('#stopBtn'), restartBtn: $('#restartBtn'), speedGroup: $('#speedGroup'),
     progress: $('#progress'), progressFill: $('#progressFill'), progressPct: $('#progressPct'), progressRunner: $('#progressRunner'),
-    fontDown: $('#fontDown'), fontUp: $('#fontUp'), redToggle: $('#redToggle'), greenToggle: $('#greenToggle'), voiceSelect: $('#voiceSelect'), syncSelect: $('#syncSelect'),
+    fontDown: $('#fontDown'), fontUp: $('#fontUp'), redToggle: $('#redToggle'), greenToggle: $('#greenToggle'), wordModeToggle: $('#wordModeToggle'), voiceSelect: $('#voiceSelect'), syncSelect: $('#syncSelect'),
     storyText: $('#storyText'),
     drawer: $('#vocabDrawer'), drawerBody: $('#drawerBody'), drawerToggle: $('#drawerToggle'), drawerClose: $('#drawerClose'), scrim: $('#drawerScrim'),
     pop: $('#wordPop'), popWord: $('#popWord'), popTags: $('#popTags'), popDef: $('#popDef'), popSay: $('#popSay'), popClose: $('#popClose'),
@@ -132,6 +132,7 @@
     fontSize: clamp(store.get('fontSize', FONT_DEFAULT), FONT_MIN, FONT_MAX),
     showRed: store.get('redWordsOn', true),
     showGreen: store.get('greenWordsOn', true),
+    wordByWord: store.get('wordByWord', true), // read one word at a time (slow, clear) vs whole sentences
     sync: SHOW_SYNC_SETTING ? store.get('highlightDelay', 'auto') : 'auto', // 'auto' or a delay in ms
     query: '',
     level: 'All',
@@ -354,10 +355,10 @@
     return weights;
   }
 
-  function startEstimator(start, end, tok, t0) {
+  function startEstimator(start, end, tok, t0, rate) {
     stopEstimator();
     const weights = chunkWeights(start, end);
-    const msPerUnit = (tts.pace[voiceKey()] || EST.msPerUnit) / state.rate;
+    const msPerUnit = (tts.pace[voiceKey()] || EST.msPerUnit) / rate;
     tts.estTimer = setInterval(() => {
       if (tok !== tts.token) return stopEstimator();
       const units = (performance.now() - t0 - EST.leadMs) / msPerUnit;
@@ -388,27 +389,88 @@
     setTimeout(() => { if (tok === tts.token && state.status === 'playing') setActive(i); }, d);
   }
 
-  /** Speak the story from `start`, one sentence per utterance (avoids Chrome's ~15s cut-off). */
-  function speakChunk(start, tok) {
+  // ---------- Reading modes ----------
+  // Word by word: each word is its own utterance, spoken slowly with a pause after it. Slower speeds
+  // mean slower words *and* longer pauses. Sentence mode reads each sentence naturally in one go.
+  const WORD_MODE = {
+    // Word by word reads at its own fixed pace; the speed buttons only apply to sentence reading.
+    // Lower this for slower words and longer pauses (0.75 → ~390 ms between words, 0.5 → ~710 ms).
+    speed: 1,
+    gapMs: 250,        // pause after each word at speed 1; divided by speed^1.5
+    commaMs: 250,      // extra pause after a comma, divided by speed
+    sentenceMs: 500,   // extra pause after . ! ?, divided by speed
+    paragraphMs: 400,  // extra pause at the end of a paragraph, divided by speed
+    // Spoken alone, many voices say "a" as the letter name ("ay") and "the" as "thee". These spellings
+    // make the voice use the everyday sounds instead. Only the audio changes; the page still shows the word.
+    sayAlone: {
+      a: () => 'uh',
+      the: (next) => (next && /^[aeiou]/i.test(next.core) ? 'thee' : 'thuh') // "thee end", "thuh hill"
+    }
+  };
+
+  /** How to say a word when it is spoken on its own (next = the following word, if known). */
+  function spokenAlone(core, next) {
+    const say = WORD_MODE.sayAlone[normalize(core)];
+    return say ? say(next) : core;
+  }
+
+  /** Speech rate for word-by-word reading: slower and clearer than sentence reading at the same speed. */
+  // 0.5x → 0.49, 0.75x → 0.67, 1x → 0.85, 1.25x → 1.02 (voices sound distorted much below ~0.45)
+  const wordRate = (speed = WORD_MODE.speed) => Math.round(0.85 * Math.pow(speed, 0.8) * 100) / 100;
+
+  function wordGapMs(w, isParagraphEnd) {
+    const speed = WORD_MODE.speed;
+    let ms = WORD_MODE.gapMs / Math.pow(speed, 1.5);
+    if (/[.!?]/.test(w.trail)) ms += WORD_MODE.sentenceMs / speed;
+    else if (/[,;:]/.test(w.trail)) ms += WORD_MODE.commaMs / speed;
+    if (isParagraphEnd) ms += WORD_MODE.paragraphMs / speed;
+    return Math.round(ms);
+  }
+
+  function speakFrom(start, tok) {
+    return state.wordByWord ? speakWordStep(start, tok) : speakSentence(start, tok);
+  }
+
+  /** Sentence mode: one sentence per utterance (also avoids Chrome's ~15s cut-off). */
+  function speakSentence(start, tok) {
     if (tok !== tts.token) return;
     const words = state.story.words;
-    // Let the last word stay lit until it has actually been heard.
     if (start >= words.length) return setTimeout(() => finish(tok), highlightDelay());
-
     let end = start;
     while (end < words.length - 1 && !words[end].endsSentence) end++;
+    speakRange(start, end, tok, state.rate, () => speakSentence(end + 1, tok));
+  }
 
-    // Build the sentence and remember where each token starts, to map boundary charIndex → word.
+  /** Word mode: speak one word, pause, then move on. */
+  function speakWordStep(i, tok) {
+    if (tok !== tts.token) return;
+    const words = state.story.words;
+    if (i >= words.length) return setTimeout(() => finish(tok), highlightDelay());
+    const w = words[i];
+    const next = words[i + 1];
+    const spoken = w.lead + spokenAlone(w.core, next) + w.trail;
+    speakRange(i, i, tok, wordRate(), () => {
+      const isParagraphEnd = !next || next.para !== w.para;
+      setTimeout(() => speakWordStep(i + 1, tok), wordGapMs(w, isParagraphEnd));
+    }, spoken);
+  }
+
+  /**
+   * Speak words start..end as one utterance, keep the highlight in step, then call onDone.
+   * `spokenText` replaces what the voice says for a single word (see WORD_MODE.sayAlone).
+   */
+  function speakRange(start, end, tok, rate, onDone, spokenText) {
+    const words = state.story.words;
+    // Build the text and remember where each token starts, to map boundary charIndex → word.
     let text = '';
     const offsets = [];
     for (let i = start; i <= end; i++) {
       offsets.push(text.length);
       text += words[i].raw + ' ';
     }
-    const u = makeUtterance(text.trim(), state.rate);
+    const u = makeUtterance(spokenText || text.trim(), rate);
     const vk = voiceKey();
     let gotBoundary = false;
-
     let startedAt = 0;
 
     u.onstart = () => {
@@ -417,10 +479,11 @@
       // Voices with word events announce the first word themselves, right as it is spoken.
       if (tts.boundaryOk.has(vk)) return;
       showWord(start, tok);
+      if (start === end) return;
       const t0 = startedAt + highlightDelay();
-      if (tts.boundaryNo.has(vk)) return startEstimator(start, end, tok, t0);
+      if (tts.boundaryNo.has(vk)) return startEstimator(start, end, tok, t0, rate);
       tts.graceTimer = setTimeout(() => {
-        if (!gotBoundary && tok === tts.token) startEstimator(start, end, tok, t0);
+        if (!gotBoundary && tok === tts.token) startEstimator(start, end, tok, t0, rate);
       }, 450);
     };
     u.onboundary = (e) => {
@@ -439,12 +502,12 @@
         // Learn this voice's real pace from how long the sentence took, so estimates stop drifting.
         const units = chunkWeights(start, end).reduce((a, b) => a + b, 0);
         const speaking = performance.now() - startedAt - EST.leadMs - EST.tailMs;
-        const measured = (speaking * state.rate) / units;
+        const measured = (speaking * rate) / units;
         if (startedAt && measured > 15 && measured < 200) {
           tts.pace[vk] = tts.pace[vk] ? tts.pace[vk] * 0.5 + measured * 0.5 : measured;
         }
       }
-      speakChunk(end + 1, tok);
+      onDone();
     };
     u.onerror = (e) => {
       if (tok !== tts.token || e.error === 'interrupted' || e.error === 'canceled') return;
@@ -475,7 +538,7 @@
     state.status = 'playing';
     setActive(clamp(start, 0, state.story.words.length - 1));
     updateControls();
-    speakChunk(state.index, tok);
+    speakFrom(state.index, tok);
   }
 
   function play() {
@@ -569,7 +632,10 @@
     if (state.status === 'playing') pause();
     const tok = ++tts.token;
     stopEstimator();
-    const u = makeUtterance(text, clamp(state.rate, 0.6, 0.85));
+    // A word shown in the story knows the word after it ("thee end" vs "thuh hill").
+    const i = wordEl ? Number(wordEl.dataset.i) : -1;
+    const next = i >= 0 ? state.story.words[i + 1] : null;
+    const u = makeUtterance(spokenAlone(text, next), Math.min(wordRate(), 0.85));
     if (wordEl) {
       wordEl.classList.remove('is-saying');
       void wordEl.offsetWidth;
@@ -753,6 +819,14 @@
     el.fontUp.disabled = state.fontSize >= FONT_MAX;
   }
 
+  function applyReadingMode() {
+    el.wordModeToggle.setAttribute('aria-pressed', String(state.wordByWord));
+    // Grey out the speeds (still clickable) while Word by word sets its own pace.
+    const speed = el.speedGroup.closest('.speed');
+    speed.classList.toggle('is-inactive', state.wordByWord);
+    speed.title = state.wordByWord ? 'Word by word uses its own slow pace. Pick a speed to read whole sentences.' : '';
+  }
+
   function applyWordColors() {
     el.storyText.classList.toggle('show-red', state.showRed);
     el.storyText.classList.toggle('show-green', state.showGreen);
@@ -767,12 +841,26 @@
   el.stopBtn.addEventListener('click', () => { stop(); announce('Stopped'); });
   el.restartBtn.addEventListener('click', () => playFrom(0));
 
-  el.speedGroup.addEventListener('change', (e) => {
-    state.rate = Number(e.target.value);
+  // Picking any speed (even the one already selected, hence 'click' as well as 'change') switches
+  // Word by word off, because the speed buttons only apply to sentence reading.
+  function onSpeedPicked(e) {
+    const input = e.target.closest('input[name="speed"]');
+    if (!input) return;
+    const rate = Number(input.value);
+    const leavingWordMode = state.wordByWord;
+    if (!leavingWordMode && rate === state.rate) return; // click + change both fire for one pick
+    state.rate = rate;
     store.set('rate', state.rate);
-    if (state.status === 'playing') playFrom(state.index); // re-speak at the new speed from this word
-    announce(`Speed ${state.rate} times`);
-  });
+    if (leavingWordMode) {
+      state.wordByWord = false;
+      store.set('wordByWord', false);
+      applyReadingMode();
+    }
+    if (state.status === 'playing') playFrom(state.index); // carry on from this word at the new speed
+    announce(leavingWordMode ? `Reading whole sentences at speed ${rate} times` : `Speed ${rate} times`);
+  }
+  el.speedGroup.addEventListener('change', onSpeedPicked);
+  el.speedGroup.addEventListener('click', onSpeedPicked);
 
   function updateSyncLabel() {
     const auto = el.syncSelect.querySelector('option[value="auto"]');
@@ -795,6 +883,13 @@
   el.fontDown.addEventListener('click', () => { state.fontSize = clamp(state.fontSize - FONT_STEP, FONT_MIN, FONT_MAX); store.set('fontSize', state.fontSize); applyFontSize(); closePopover(); });
   el.fontUp.addEventListener('click', () => { state.fontSize = clamp(state.fontSize + FONT_STEP, FONT_MIN, FONT_MAX); store.set('fontSize', state.fontSize); applyFontSize(); closePopover(); });
   el.redToggle.addEventListener('click', () => { state.showRed = !state.showRed; store.set('redWordsOn', state.showRed); applyWordColors(); });
+  el.wordModeToggle.addEventListener('click', () => {
+    state.wordByWord = !state.wordByWord;
+    store.set('wordByWord', state.wordByWord);
+    applyReadingMode();
+    if (state.status === 'playing') playFrom(state.index); // switch mode from the current word
+    announce(state.wordByWord ? 'Reading one word at a time' : 'Reading whole sentences');
+  });
   el.greenToggle.addEventListener('click', () => { state.showGreen = !state.showGreen; store.set('greenWordsOn', state.showGreen); applyWordColors(); });
 
   // ---------- Word interaction: double-click / double-tap / keyboard ----------
@@ -1044,6 +1139,7 @@
     }
     el.syncSelect.closest('label').hidden = !SHOW_SYNC_SETTING;
     renderSpeedControls();
+    applyReadingMode();
     renderLevelFilters();
     updateStars();
     syncDrawerInert();

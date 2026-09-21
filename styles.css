@@ -265,6 +265,7 @@ body {
 
 .voice { display: inline-flex; align-items: center; gap: .5rem; font-weight: 800; }
 .voice__label { color: var(--muted); }
+.voice__select--sync { max-width: 130px; }
 .voice__select {
   max-width: 220px; min-height: 42px; padding: .3rem 2rem .3rem .9rem;
   font: 700 1rem 'Nunito', sans-serif; color: var(--ink);
@@ -289,7 +290,9 @@ body {
   display: inline-block; position: relative;
   padding: 0 .1em; margin: 0 -.1em; border-radius: .35em;
   cursor: pointer; -webkit-tap-highlight-color: transparent;
-  transition: background-color .2s ease, transform .2s cubic-bezier(.34,1.56,.64,1), box-shadow .2s ease, color .2s;
+  /* No transform/shadow transition here: when a word stops being active it snaps back instantly,
+     so only one word ever looks highlighted during read-aloud. */
+  transition: background-color .15s ease, color .2s ease;
 }
 .word:hover { background: var(--lilac); }
 .word:focus { outline: none; }
@@ -306,6 +309,7 @@ body {
   transform: scale(1.14);
   box-shadow: 0 3px 0 rgba(46,42,79,.28);
   z-index: 2;
+  transition: transform .08s ease-out; /* quick zoom so it keeps pace with 1x speech */
 }
 .word.is-flash { animation: flash 1.8s ease; }
 .word.is-saying { animation: boing .55s ease; background: #D9CCFF; }

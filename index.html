@@ -165,10 +165,26 @@
                   <span class="dot dot--green" aria-hidden="true"></span> Green Words
                 </button>
               </div>
-              <label class="voice">
-                <span class="voice__label">Voice</span>
-                <select id="voiceSelect" class="voice__select"></select>
-              </label>
+              <div class="flex flex-wrap items-center gap-3">
+                <label class="voice">
+                  <span class="voice__label">Voice</span>
+                  <select id="voiceSelect" class="voice__select"></select>
+                </label>
+                <label class="voice" title="If the highlight runs ahead of the voice (common with Bluetooth speakers), add a delay.">
+                  <span class="voice__label">Sync</span>
+                  <select id="syncSelect" class="voice__select voice__select--sync">
+                    <option value="auto">Auto</option>
+                    <option value="0">0 ms</option>
+                    <option value="50">50 ms</option>
+                    <option value="100">100 ms</option>
+                    <option value="150">150 ms</option>
+                    <option value="200">200 ms</option>
+                    <option value="250">250 ms</option>
+                    <option value="300">300 ms</option>
+                    <option value="400">400 ms</option>
+                  </select>
+                </label>
+              </div>
             </div>
           </div>
 

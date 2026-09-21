@@ -11,6 +11,9 @@
   const FONT_MIN = 22, FONT_MAX = 44, FONT_STEP = 2, FONT_DEFAULT = 30;
   const CARD_COLORS = ['#DFF5FF', '#FFE3EC', '#E3FBEF', '#FFF3C9', '#EDE6FF', '#FFE6D6'];
   const DOUBLE_TAP_MS = 380;
+  // The "Sync" menu (manual highlight delay, e.g. for Bluetooth speakers) is hidden for now to keep the
+  // controls simple for students. Set to true to bring it back; while hidden, the delay is always 'auto'.
+  const SHOW_SYNC_SETTING = false;
 
   // ---------- Helpers ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -111,7 +114,7 @@
     controls: $('#controls'), playBtn: $('#playBtn'), playIcon: $('#playIcon'), playLabel: $('#playLabel'),
     stopBtn: $('#stopBtn'), restartBtn: $('#restartBtn'), speedGroup: $('#speedGroup'),
     progress: $('#progress'), progressFill: $('#progressFill'), progressPct: $('#progressPct'), progressRunner: $('#progressRunner'),
-    fontDown: $('#fontDown'), fontUp: $('#fontUp'), redToggle: $('#redToggle'), greenToggle: $('#greenToggle'), voiceSelect: $('#voiceSelect'),
+    fontDown: $('#fontDown'), fontUp: $('#fontUp'), redToggle: $('#redToggle'), greenToggle: $('#greenToggle'), voiceSelect: $('#voiceSelect'), syncSelect: $('#syncSelect'),
     storyText: $('#storyText'),
     drawer: $('#vocabDrawer'), drawerBody: $('#drawerBody'), drawerToggle: $('#drawerToggle'), drawerClose: $('#drawerClose'), scrim: $('#drawerScrim'),
     pop: $('#wordPop'), popWord: $('#popWord'), popTags: $('#popTags'), popDef: $('#popDef'), popSay: $('#popSay'), popClose: $('#popClose'),
@@ -129,6 +132,7 @@
     fontSize: clamp(store.get('fontSize', FONT_DEFAULT), FONT_MIN, FONT_MAX),
     showRed: store.get('redWordsOn', true),
     showGreen: store.get('greenWordsOn', true),
+    sync: SHOW_SYNC_SETTING ? store.get('highlightDelay', 'auto') : 'auto', // 'auto' or a delay in ms
     query: '',
     level: 'All',
     focusIndex: 0
@@ -244,7 +248,8 @@
     estTimer: null,
     graceTimer: null,
     boundaryOk: new Set(),  // voices that fire word boundary events
-    boundaryNo: new Set()   // voices that don't (e.g. Chrome's online "Google" voices)
+    boundaryNo: new Set(),  // voices that don't (e.g. Chrome's online "Google" voices)
+    pace: {}                // learned ms per weight unit at 1x, per voice, for the estimator
   };
 
   // macOS ships joke and retro voices (Bubbles, Zarvox, Eddy, Grandma...). Hide them from kids.
@@ -334,28 +339,61 @@
   }
 
   /** Fallback highlighter for voices without boundary events: estimate word timing from length. */
-  function startEstimator(start, end, tok, t0) {
-    stopEstimator();
+  // Estimator timing model (fitted to measured word events): each word costs a fixed amount plus a
+  // little per letter, punctuation adds a pause, and every sentence has a short lead-in and tail.
+  const EST = { base: 2.2, perLetter: 0.55, comma: 2.5, stop: 4, msPerUnit: 48, leadMs: 60, tailMs: 150 };
+
+  /** Relative duration of each word in a sentence. */
+  function chunkWeights(start, end) {
     const weights = [];
     for (let i = start; i <= end; i++) {
       const w = state.story.words[i];
-      weights.push(w.core.length + 2 + (/[.!?]/.test(w.trail) ? 7 : /[,;:]/.test(w.trail) ? 4 : 0));
+      const pause = i === end ? 0 : /[.!?]/.test(w.trail) ? EST.stop : /[,;:]/.test(w.trail) ? EST.comma : 0;
+      weights.push(EST.base + w.core.length * EST.perLetter + pause);
     }
-    const msPerUnit = 56 / state.rate;
+    return weights;
+  }
+
+  function startEstimator(start, end, tok, t0) {
+    stopEstimator();
+    const weights = chunkWeights(start, end);
+    const msPerUnit = (tts.pace[voiceKey()] || EST.msPerUnit) / state.rate;
     tts.estTimer = setInterval(() => {
       if (tok !== tts.token) return stopEstimator();
-      const units = (performance.now() - t0) / msPerUnit;
+      const units = (performance.now() - t0 - EST.leadMs) / msPerUnit;
       let acc = 0, k = 0;
       while (k < weights.length - 1 && acc + weights[k] < units) { acc += weights[k]; k++; }
       if (start + k !== state.index) setActive(start + k);
-    }, 60);
+    }, 30);
+  }
+
+  /**
+   * Word events fire when the speech engine produces a word, but the sound reaches the speakers later
+   * (a few ms on built-in speakers, 150–300 ms on Bluetooth). Delay the highlight by that much.
+   */
+  function highlightDelay() {
+    return state.sync === 'auto' ? autoLatency() : Number(state.sync) || 0;
+  }
+
+  /** Best guess at the speaker delay, from what the browser reports for its audio output. */
+  function autoLatency() {
+    if (!audioCtx) return 0;
+    const seconds = (audioCtx.outputLatency || 0) + (audioCtx.baseLatency || 0);
+    return clamp(Math.round(seconds * 1000), 0, 400);
+  }
+
+  function showWord(i, tok) {
+    const d = highlightDelay();
+    if (d <= 0) return setActive(i);
+    setTimeout(() => { if (tok === tts.token && state.status === 'playing') setActive(i); }, d);
   }
 
   /** Speak the story from `start`, one sentence per utterance (avoids Chrome's ~15s cut-off). */
   function speakChunk(start, tok) {
     if (tok !== tts.token) return;
     const words = state.story.words;
-    if (start >= words.length) return finish(tok);
+    // Let the last word stay lit until it has actually been heard.
+    if (start >= words.length) return setTimeout(() => finish(tok), highlightDelay());
 
     let end = start;
     while (end < words.length - 1 && !words[end].endsSentence) end++;
@@ -371,11 +409,15 @@
     const vk = voiceKey();
     let gotBoundary = false;
 
+    let startedAt = 0;
+
     u.onstart = () => {
       if (tok !== tts.token) return;
-      const t0 = performance.now();
-      setActive(start);
+      startedAt = performance.now();
+      // Voices with word events announce the first word themselves, right as it is spoken.
       if (tts.boundaryOk.has(vk)) return;
+      showWord(start, tok);
+      const t0 = startedAt + highlightDelay();
       if (tts.boundaryNo.has(vk)) return startEstimator(start, end, tok, t0);
       tts.graceTimer = setTimeout(() => {
         if (!gotBoundary && tok === tts.token) startEstimator(start, end, tok, t0);
@@ -387,12 +429,21 @@
       if (!gotBoundary) { gotBoundary = true; tts.boundaryOk.add(vk); stopEstimator(); }
       let k = 0;
       while (k < offsets.length - 1 && offsets[k + 1] <= e.charIndex) k++;
-      setActive(start + k);
+      showWord(start + k, tok);
     };
     u.onend = () => {
       if (tok !== tts.token) return;
       stopEstimator();
-      if (!gotBoundary && end - start >= 2 && !tts.boundaryOk.has(vk)) tts.boundaryNo.add(vk);
+      if (!gotBoundary && end - start >= 2 && !tts.boundaryOk.has(vk)) {
+        tts.boundaryNo.add(vk);
+        // Learn this voice's real pace from how long the sentence took, so estimates stop drifting.
+        const units = chunkWeights(start, end).reduce((a, b) => a + b, 0);
+        const speaking = performance.now() - startedAt - EST.leadMs - EST.tailMs;
+        const measured = (speaking * state.rate) / units;
+        if (startedAt && measured > 15 && measured < 200) {
+          tts.pace[vk] = tts.pace[vk] ? tts.pace[vk] * 0.5 + measured * 0.5 : measured;
+        }
+      }
       speakChunk(end + 1, tok);
     };
     u.onerror = (e) => {
@@ -410,7 +461,8 @@
   function unlockAudio() {
     try {
       audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      if (audioCtx.state === 'suspended') audioCtx.resume().then(updateSyncLabel);
+      updateSyncLabel();
     } catch { /* no Web Audio */ }
   }
 
@@ -722,6 +774,17 @@
     announce(`Speed ${state.rate} times`);
   });
 
+  function updateSyncLabel() {
+    const auto = el.syncSelect.querySelector('option[value="auto"]');
+    auto.textContent = audioCtx ? `Auto (${autoLatency()} ms)` : 'Auto';
+  }
+  el.syncSelect.value = [...el.syncSelect.options].some((o) => o.value === String(state.sync)) ? String(state.sync) : 'auto';
+  el.syncSelect.addEventListener('change', () => {
+    state.sync = el.syncSelect.value === 'auto' ? 'auto' : Number(el.syncSelect.value);
+    store.set('highlightDelay', state.sync);
+    updateSyncLabel();
+  });
+
   el.voiceSelect.addEventListener('change', () => {
     tts.voiceURI = el.voiceSelect.value;
     store.set('voiceURI', tts.voiceURI);
@@ -977,8 +1040,9 @@
       synth.addEventListener?.('voiceschanged', loadVoices);
     } else {
       el.speechWarning.hidden = false;
-      el.voiceSelect.closest('label').hidden = true;
+      el.voiceSelect.closest('label').parentElement.hidden = true;
     }
+    el.syncSelect.closest('label').hidden = !SHOW_SYNC_SETTING;
     renderSpeedControls();
     renderLevelFilters();
     updateStars();
